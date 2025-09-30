@@ -13,7 +13,6 @@ from typing import Optional
 from exchanges import ExchangeFactory
 from helpers import TradingLogger
 from helpers.lark_bot import LarkBot
-from helpers.telegram_bot import TelegramBot
 
 
 @dataclass
@@ -81,6 +80,7 @@ class TradingBot:
         self.order_canceled_event = asyncio.Event()
         self.shutdown_requested = False
         self.loop = None
+        self.grid_except_price = None 
 
         # Register order callback
         self._setup_websocket_handlers()
@@ -179,11 +179,12 @@ class TradingBot:
         # if the program detects active_close_orders during startup, it is necessary to consider cooldown_time
         if self.last_open_order_time == 0 and len(self.active_close_orders) > 0:
             self.last_open_order_time = time.time()
+            return 0
 
         if time.time() - self.last_open_order_time > cool_down_time:
             return 0
         else:
-            return 1
+            return int(cool_down_time - (time.time() - self.last_open_order_time))
 
     async def _place_and_monitor_open_order(self) -> bool:
         """Place an order and monitor its execution."""
@@ -202,6 +203,9 @@ class TradingBot:
 
             if not order_result.success:
                 return False
+            order_id = order_result.order_id
+            self.logger.log(f"[{self.current_order_status}] [{order_id}] {order_result.status} "
+                            f"{self.config.quantity} @ {order_result.price}", "INFO")
 
             if order_result.status == 'FILLED':
                 return await self._handle_order_result(order_result)
@@ -250,75 +254,37 @@ class TradingBot:
                 if not close_order_result.success:
                     self.logger.log(f"[CLOSE] Failed to place close order: {close_order_result.error_message}", "ERROR")
                     raise Exception(f"[CLOSE] Failed to place close order: {close_order_result.error_message}")
-
+                
+                self.logger.log(f"[CLOSE] [{close_order_result.order_id}] {close_order_result.status} "
+                        f"{self.config.quantity} @ {close_price}", "INFO")
                 return True
 
         else:
-            new_order_price = await self.exchange_client.get_order_price(self.config.direction)
-
-            def should_wait(direction: str, new_order_price: Decimal, order_result_price: Decimal) -> bool:
-                if direction == "buy":
-                    return new_order_price <= order_result_price
-                elif direction == "sell":
-                    return new_order_price >= order_result_price
-                return False
-
-            if self.config.exchange == "lighter":
-                current_order_status = self.exchange_client.current_order.status
-            else:
-                order_info = await self.exchange_client.get_order_info(order_id)
-                current_order_status = order_info.status
-
-            while (
-                should_wait(self.config.direction, new_order_price, order_result.price)
-                and current_order_status == "OPEN"
-            ):
-                self.logger.log(f"[OPEN] [{order_id}] Waiting for order to be filled", "INFO")
-                await asyncio.sleep(5)
-                if self.config.exchange == "lighter":
-                    current_order_status = self.exchange_client.current_order.status
-                else:
-                    order_info = await self.exchange_client.get_order_info(order_id)
-                    current_order_status = order_info.status
-                new_order_price = await self.exchange_client.get_order_price(self.config.direction)
-
             self.order_canceled_event.clear()
             # Cancel the order if it's still open
             self.logger.log(f"[OPEN] [{order_id}] Cancelling order and placing a new order", "INFO")
-            if self.config.exchange == "lighter":
+            try:
                 cancel_result = await self.exchange_client.cancel_order(order_id)
-                start_time = time.time()
-                while (time.time() - start_time < 10 and self.exchange_client.current_order.status != 'CANCELED' and
-                        self.exchange_client.current_order.status != 'FILLED'):
-                    await asyncio.sleep(0.1)
-
-                if self.exchange_client.current_order.status not in ['CANCELED', 'FILLED']:
-                    raise Exception(f"[OPEN] Error cancelling order: {self.exchange_client.current_order.status}")
-                else:
-                    self.order_filled_amount = self.exchange_client.current_order.filled_size
-            else:
-                try:
-                    cancel_result = await self.exchange_client.cancel_order(order_id)
-                    if not cancel_result.success:
-                        self.order_canceled_event.set()
-                        self.logger.log(f"[CLOSE] Failed to cancel order {order_id}: {cancel_result.error_message}", "WARNING")
-                    else:
-                        self.current_order_status = "CANCELED"
-
-                except Exception as e:
+                if not cancel_result.success:
                     self.order_canceled_event.set()
-                    self.logger.log(f"[CLOSE] Error canceling order {order_id}: {e}", "ERROR")
-
-                if self.config.exchange == "backpack":
-                    self.order_filled_amount = cancel_result.filled_size
+                    self.logger.log(f"[CLOSE] Failed to cancel order {order_id}: {cancel_result.error_message}", "ERROR")
                 else:
-                    # Wait for cancel event or timeout
-                    if not self.order_canceled_event.is_set():
-                        try:
-                            await asyncio.wait_for(self.order_canceled_event.wait(), timeout=5)
-                        except asyncio.TimeoutError:
-                            order_info = await self.exchange_client.get_order_info(order_id)
-                            self.order_filled_amount = order_info.filled_size
+                    self.current_order_status = "CANCELED"
+
+            except Exception as e:
+                self.order_canceled_event.set()
+                self.logger.log(f"[CLOSE] Error canceling order {order_id}: {e}", "ERROR")
+
+            if self.config.exchange == "backpack":
+                self.order_filled_amount = cancel_result.filled_size
+            else:
+                # Wait for cancel event or timeout
+                if not self.order_canceled_event.is_set():
+                    try:
+                        await asyncio.wait_for(self.order_canceled_event.wait(), timeout=5)
+                    except asyncio.TimeoutError:
+                        order_info = await self.exchange_client.get_order_info(order_id)
+                        self.order_filled_amount = order_info.filled_size
 
             if self.order_filled_amount > 0:
                 close_side = self.config.close_order_side
@@ -326,7 +292,6 @@ class TradingBot:
                     close_order_result = await self.exchange_client.place_close_order(
                         self.config.contract_id,
                         self.order_filled_amount,
-                        filled_price,
                         close_side
                     )
                 else:
@@ -341,21 +306,10 @@ class TradingBot:
                         close_price,
                         close_side
                     )
-                    if self.config.exchange == "lighter":
-                        start_time = time.time()
-                        while time.time() - start_time < 5:
-                            await asyncio.sleep(1)
-                            if self.exchange_client.current_order is not None:
-                                if self.exchange_client.current_order.status == 'CANCELED-SELF-TRADE':
-                                    close_order_result = await self.exchange_client.place_close_order(
-                                        self.config.contract_id,
-                                        self.order_filled_amount,
-                                        close_price,
-                                        close_side
-                                    )
-                                    start_time = time.time()
-
+                self.logger.log(f"[CLOSE] [{close_order_result.order_id}] {close_order_result.status} "
+                        f"{self.order_filled_amount} @ {close_price}", "INFO")
                 self.last_open_order_time = time.time()
+
                 if not close_order_result.success:
                     self.logger.log(f"[CLOSE] Failed to place close order: {close_order_result.error_message}", "ERROR")
 
@@ -391,8 +345,8 @@ class TradingBot:
                     if isinstance(order, dict)
                 )
 
-                self.logger.log(f"Current Position: {position_amt} | Active closing amount: {active_close_amount} | "
-                                f"Order quantity: {len(self.active_close_orders)}")
+                self.logger.log(f"Current Position: {position_amt} | Active closing orders/amount: {len(self.active_close_orders)}/{active_close_amount} | "
+                                f"Gird except price: {self.grid_except_price}")
                 self.last_log_time = time.time()
                 # Check for position mismatch
                 if abs(position_amt - active_close_amount) > (2 * self.config.quantity):
@@ -405,7 +359,7 @@ class TradingBot:
                     error_message += "###### ERROR ###### ERROR ###### ERROR ###### ERROR #####\n"
                     self.logger.log(error_message, "ERROR")
 
-                    await self.send_notification(error_message.lstrip())
+                    await self._lark_bot_notify(error_message.lstrip())
 
                     if not self.shutdown_requested:
                         self.shutdown_requested = True
@@ -437,12 +391,16 @@ class TradingBot:
                 if next_close_price / new_order_close_price > 1 + self.config.grid_step/100:
                     return True
                 else:
+                    self.grid_except_price = round(next_close_price / 
+                                                   (1 + self.config.grid_step/100) / (1 - self.config.take_profit/100), 2)
                     return False
             elif self.config.direction == "sell":
                 new_order_close_price = best_bid * (1 - self.config.take_profit/100)
                 if new_order_close_price / next_close_price > 1 + self.config.grid_step/100:
                     return True
                 else:
+                    self.grid_except_price = round(next_close_price / 
+                                                   (1 + self.config.grid_step/100) / (1 - self.config.take_profit/100), 2)
                     return False
             else:
                 raise ValueError(f"Invalid direction: {self.config.direction}")
@@ -478,17 +436,11 @@ class TradingBot:
 
         return stop_trading, pause_trading
 
-    async def send_notification(self, message: str):
+    async def _lark_bot_notify(self, message: str):
         lark_token = os.getenv("LARK_TOKEN")
         if lark_token:
-            async with LarkBot(lark_token) as lark_bot:
-                await lark_bot.send_text(message)
-
-        telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
-        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        if telegram_token and telegram_chat_id:
-            with TelegramBot(telegram_token, telegram_chat_id) as tg_bot:
-                tg_bot.send_text(message)
+            async with LarkBot(lark_token) as bot:
+                await bot.send_text(message)
 
     async def run(self):
         """Main trading loop."""
@@ -540,10 +492,9 @@ class TradingBot:
                 stop_trading, pause_trading = await self._check_price_condition()
                 if stop_trading:
                     msg = f"\n\nWARNING: [{self.config.exchange.upper()}_{self.config.ticker.upper()}] \n"
-                    msg += "Stopped trading due to stop price triggered\n"
-                    msg += "价格已经达到停止交易价格，脚本将停止交易\n"
-                    await self.send_notification(msg.lstrip())
+                    msg += "Stopped trading due to stop price\n"
                     await self.graceful_shutdown(msg)
+                    await self._lark_bot_notify(msg.lstrip())
                     continue
 
                 if pause_trading:
@@ -554,6 +505,7 @@ class TradingBot:
                     wait_time = self._calculate_wait_time()
 
                     if wait_time > 0:
+                        self.logger.log(f"Wait for {wait_time}s...", "INFO")
                         await asyncio.sleep(wait_time)
                         continue
                     else:
@@ -570,7 +522,6 @@ class TradingBot:
             await self.graceful_shutdown("User interruption (Ctrl+C)")
         except Exception as e:
             self.logger.log(f"Critical error: {e}", "ERROR")
-            self.logger.log(f"Traceback: {traceback.format_exc()}", "ERROR")
             await self.graceful_shutdown(f"Critical error: {e}")
             raise
         finally:
