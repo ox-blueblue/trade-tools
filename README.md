@@ -12,7 +12,7 @@
 
 ## 自动交易机器人
 
-一个支持多个交易所（目前包括 EdgeX, Backpack, Paradex, Aster, Lighter）的模块化交易机器人。该机器人实现了自动下单并在盈利时自动平仓的策略，主要目的是取得高交易量。
+一个支持多个交易所（目前包括 EdgeX, Backpack, Paradex, Aster, Lighter, GRVT）的模块化交易机器人。该机器人实现了自动下单并在盈利时自动平仓的策略，主要目的是取得高交易量。
 
 ## 邀请链接 (获得返佣以及福利)
 
@@ -32,7 +32,17 @@
 
 使用我的推荐链接获得 30% 手续费返佣以及积分加成
 
+#### GRVT 交易所: [https://grvt.io/exchange/sign-up?ref=QUANT](https://grvt.io/exchange/sign-up?ref=QUANT)
+
+获得 1.3x 全网最高的积分加成，未来的手续费返佣（官方预计 10 月中上线），以及即将开始的专属交易竞赛
+
 ## 安装
+
+Python 版本要求（最佳选项是 Python 3.10 - 3.12）：
+
+- grvt 要求 python 版本在 3.10 及以上
+- Paradex 要求 python 版本在 3.9 - 3.12
+- 其他交易所需要 python 版本在 3.8 及以上
 
 1. **克隆仓库**：
 
@@ -44,6 +54,7 @@
 2. **创建并激活虚拟环境**：
 
    首先确保你目前不在任何虚拟环境中：
+
    ```bash
    deactivate
    ```
@@ -55,17 +66,20 @@
    ```
 
    激活虚拟环境（每次使用脚本时，都需要激活虚拟环境）：
+
    ```bash
    source env/bin/activate  # Windows: env\Scripts\activate
    ```
 
 3. **安装依赖**：
    首先确保你目前不在任何虚拟环境中：
+
    ```bash
    deactivate
    ```
 
    激活虚拟环境（每次使用脚本时，都需要激活虚拟环境）：
+
    ```bash
    source env/bin/activate  # Windows: env\Scripts\activate
    ```
@@ -74,9 +88,21 @@
    pip install -r requirements.txt
    ```
 
+   **grvt 用户**：如果您想使用 grvt 交易所，需要额外安装 grvt 专用依赖：
+   激活虚拟环境（每次使用脚本时，都需要激活虚拟环境）：
+
+   ```bash
+   source env/bin/activate  # Windows: env\Scripts\activate
+   ```
+
+   ```bash
+   pip install grvt-pysdk
+   ```
+
    **Paradex 用户**：如果您想使用 Paradex 交易所，需要额外创建一个虚拟环境并安装 Paradex 专用依赖：
 
    首先确保你目前不在任何虚拟环境中：
+
    ```bash
    deactivate
    ```
@@ -88,11 +114,13 @@
    ```
 
    激活虚拟环境（每次使用脚本时，都需要激活虚拟环境）：
+
    ```bash
    source para_env/bin/activate  # Windows: para_env\Scripts\activate
    ```
 
    安装 Paradex 依赖
+
    ```bash
    pip install -r para_requirements.txt
    ```
@@ -121,6 +149,7 @@
 #### ⚙️ 关键参数
 
 - **quantity**: 每笔订单的交易数量
+- **direction**: 脚本交易的方向，buy 表示看多，sell 表示看空
 - **take-profit**: 止盈百分比（如 0.02 表示 0.02%）
 - **max-orders**: 最大同时活跃订单数（风险控制）
 - **wait-time**: 订单间等待时间（避免过于频繁交易）
@@ -202,6 +231,12 @@ ETH 永续合约（带网格步长控制）：
 python runbot.py --exchange backpack --ticker ETH --quantity 0.1 --take-profit 0.02 --max-orders 40 --wait-time 450 --grid-step 0.3
 ```
 
+ETH 永续合约（启用 Boost 模式）：
+
+```bash
+python runbot.py --exchange backpack --ticker ETH --direction buy --quantity 0.1 --boost
+```
+
 ### Aster 交易所：
 
 ETH：
@@ -213,7 +248,15 @@ python runbot.py --exchange aster --ticker ETH --quantity 0.1 --take-profit 0.02
 ETH（启用 Boost 模式）：
 
 ```bash
-python runbot.py --exchange aster --ticker ETH --direction buy --quantity 0.1 --aster-boost
+python runbot.py --exchange aster --ticker ETH --direction buy --quantity 0.1 --boost
+```
+
+### GRVT 交易所：
+
+BTC：
+
+```bash
+python runbot.py --exchange grvt --ticker BTC --quantity 0.05 --take-profit 0.02 --max-orders 40 --wait-time 450
 ```
 
 ## 配置
@@ -257,9 +300,16 @@ python runbot.py --exchange aster --ticker ETH --direction buy --quantity 0.1 --
 - `LIGHTER_ACCOUNT_INDEX`: Lighter 账户索引
 - `LIGHTER_API_KEY_INDEX`: Lighter API 密钥索引
 
+#### GRVT 配置
+
+- `GRVT_TRADING_ACCOUNT_ID`: 您的 GRVT 交易账户 ID
+- `GRVT_PRIVATE_KEY`: 您的 GRVT 私钥
+- `GRVT_API_KEY`: 您的 GRVT API 密钥
+
 **获取 LIGHTER_ACCOUNT_INDEX 的方法**：
 
 1. 在下面的网址最后加上你的钱包地址：
+
    ```
    https://mainnet.zklighter.elliot.ai/api/v1/account?by=l1_address&value=
    ```
@@ -270,7 +320,7 @@ python runbot.py --exchange aster --ticker ETH --direction buy --quantity 0.1 --
 
 ### 命令行参数
 
-- `--exchange`: 使用的交易所：'edgex'、'backpack'、'paradex'、'aster'或'lighter'（默认：edgex）
+- `--exchange`: 使用的交易所：'edgex'、'backpack'、'paradex'、'aster'、'lighter'或'grvt'（默认：edgex）
 - `--ticker`: 标的资产符号（例如：ETH、BTC、SOL）。合约 ID 自动解析。
 - `--quantity`: 订单数量（默认：0.1）
 - `--take-profit`: 止盈百分比（例如 0.02 表示 0.02%）
@@ -280,9 +330,9 @@ python runbot.py --exchange aster --ticker ETH --direction buy --quantity 0.1 --
 - `--wait-time`: 订单间等待时间（秒）（默认：450）
 - `--grid-step`: 与下一个平仓订单价格的最小距离百分比（默认：-100，表示无限制）
 - `--stop-price`: 当 `direction` 是 'buy' 时，当 price >= stop-price 时停止交易并退出程序；'sell' 逻辑相反（默认：-1，表示不会因为价格原因停止交易），参数的目的是防止订单被挂在”你认为的开多高点或开空低点“。
-- `--pause-price`: 当 `direction` 是 'buy' 时，当 price >= pause-price 时暂停交易，并在价格回到pause-price以下时重新开始交易；'sell' 逻辑相反（默认：-1，表示不会因为价格原因停止交易），参数的目的是防止订单被挂在”你认为的开多高点或开空低点“。
-- `--aster-boost`: 启用 Aster 交易所的 Boost 模式进行交易量提升（仅适用于 aster 交易所）
-  `--aster-boost` 的下单逻辑：下 maker 单开仓，成交后立即用 taker 单关仓，以此循环。磨损为一单 maker，一单 taker 的手续费，以及滑点。
+- `--pause-price`: 当 `direction` 是 'buy' 时，当 price >= pause-price 时暂停交易，并在价格回到 pause-price 以下时重新开始交易；'sell' 逻辑相反（默认：-1，表示不会因为价格原因停止交易），参数的目的是防止订单被挂在”你认为的开多高点或开空低点“。
+- `--boost`: 启用 Boost 模式进行交易量提升（仅适用于 aster 和 backpack 交易所）
+  Boost 模式的下单逻辑：下 maker 单开仓，成交后立即用 taker 单关仓，以此循环。磨损为一单 maker，一单 taker 的手续费，以及滑点。
 
 ## 日志记录
 

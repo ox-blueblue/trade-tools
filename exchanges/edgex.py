@@ -180,6 +180,9 @@ class EdgeXClient(BaseExchangeClient):
 
                     if orders and len(orders) > 0:
                         order = orders[0]  # Get the first order
+                        if order.get('contractId') != self.config.contract_id:
+                            return
+
                         order_id = order.get('id')
                         status = order.get('status')
                         side = order.get('side', '').lower()

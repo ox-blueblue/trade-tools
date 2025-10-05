@@ -15,6 +15,7 @@ class ExchangeFactory:
         'paradex': 'exchanges.paradex.ParadexClient',
         'aster': 'exchanges.aster.AsterClient',
         'lighter': 'exchanges.lighter.LighterClient',
+        'grvt': 'exchanges.grvt.GrvtClient',
     }
 
     @classmethod

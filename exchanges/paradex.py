@@ -186,6 +186,8 @@ class ParadexClient(BaseExchangeClient):
                 price = data.get("price")
                 contract_id = data.get("market")
                 filled_size = str(Decimal(size) - Decimal(remaining_size))
+                if contract_id != self.config.contract_id:
+                    return
 
                 if order_id and status:
                     # Determine order type based on side

@@ -378,6 +378,41 @@ class BackpackClient(BaseExchangeClient):
 
         return OrderResult(success=False, error_message='Max retries exceeded')
 
+    async def place_market_order(self, contract_id: str, quantity: Decimal, direction: str) -> OrderResult:
+        """Place a market order with Backpack."""
+        # Validate direction
+        if direction == 'buy':
+            side = 'Bid'
+        elif direction == 'sell':
+            side = 'Ask'
+        else:
+            raise Exception(f"[OPEN] Invalid direction: {direction}")
+
+        result = self.account_client.execute_order(
+            symbol=contract_id,
+            side=side,
+            order_type=OrderTypeEnum.MARKET,
+            quantity=str(quantity)
+        )
+
+        order_id = result.get('id')
+        order_status = result.get('status').upper()
+
+        if order_status != 'FILLED':
+            self.logger.log(f"Market order failed with status: {order_status}", "ERROR")
+            sys.exit(1)
+        # For market orders, we expect them to be filled immediately
+        else:
+            price = Decimal(result.get('executedQuoteQuantity', '0'))/Decimal(result.get('executedQuantity'))
+            return OrderResult(
+                success=True,
+                order_id=order_id,
+                side=direction.lower(),
+                size=quantity,
+                price=price,
+                status='FILLED'
+            )
+
     async def place_close_order(self, contract_id: str, quantity: Decimal, price: Decimal, side: str) -> OrderResult:
         """Place a close order with Backpack using official SDK with retry logic for POST_ONLY rejections."""
         max_retries = 15
