@@ -158,15 +158,15 @@ class TradingBot:
     def _calculate_wait_time(self) -> Decimal:
         """Calculate wait time between orders."""
         cool_down_time = self.config.wait_time
-
+        # has placed new orders
         if len(self.active_close_orders) < self.last_close_orders:
             self.last_close_orders = len(self.active_close_orders)
             return 0
-
+        # reach max orders
         self.last_close_orders = len(self.active_close_orders)
         if len(self.active_close_orders) >= self.config.max_orders:
             return 1
-
+        # dynamic cool down time based on active close orders
         if len(self.active_close_orders) / self.config.max_orders >= 2/3:
             cool_down_time = 2 * self.config.wait_time
         elif len(self.active_close_orders) / self.config.max_orders >= 1/3:
@@ -179,7 +179,6 @@ class TradingBot:
         # if the program detects active_close_orders during startup, it is necessary to consider cooldown_time
         if self.last_open_order_time == 0 and len(self.active_close_orders) > 0:
             self.last_open_order_time = time.time()
-            return 0
 
         if time.time() - self.last_open_order_time > cool_down_time:
             return 0
