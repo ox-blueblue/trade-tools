@@ -284,10 +284,24 @@ class TradingBot:
                     try:
                         await asyncio.wait_for(self.order_canceled_event.wait(), timeout=5)
                     except asyncio.TimeoutError:
+                        pass
+                try_count = 60
+                while try_count:
+                    try_count -= 1      
+                    try:                      
                         order_info = await self.exchange_client.get_order_info(order_id)
-                        self.order_filled_amount = order_info.filled_size
+                    except Exception as e:
+                        self.logger.log(f"[CLOSE] Get order info exception of order {order_id}: {e}", "ERROR")
+                        await asyncio.sleep(1)
+                        continue
+                    self.order_filled_amount = order_info.filled_size
+                    if not self.order_filled_amount:                                
+                        self.logger.log(f"[CLOSE] Get filled amount fail of order {order_id}", "ERROR")
+                        await asyncio.sleep(1)
+                    else:
+                        break
 
-            if self.order_filled_amount > 0:
+            if self.order_filled_amount and self.order_filled_amount > 0:
                 close_side = self.config.close_order_side
                 if self.config.boost_mode:
                     close_order_result = await self.exchange_client.place_close_order(
