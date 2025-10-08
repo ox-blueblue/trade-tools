@@ -167,14 +167,14 @@ class TradingBot:
         if len(self.active_close_orders) >= self.config.max_orders:
             return 1
         # dynamic cool down time based on active close orders
-        if len(self.active_close_orders) / self.config.max_orders >= 2/3:
-            cool_down_time = 2 * self.config.wait_time
-        elif len(self.active_close_orders) / self.config.max_orders >= 1/3:
-            cool_down_time = self.config.wait_time
-        elif len(self.active_close_orders) / self.config.max_orders >= 1/6:
-            cool_down_time = self.config.wait_time / 2
-        else:
-            cool_down_time = self.config.wait_time / 4
+        # if len(self.active_close_orders) / self.config.max_orders >= 2/3:
+        #     cool_down_time = 2 * self.config.wait_time
+        # elif len(self.active_close_orders) / self.config.max_orders >= 1/3:
+        #     cool_down_time = self.config.wait_time
+        # elif len(self.active_close_orders) / self.config.max_orders >= 1/6:
+        #     cool_down_time = self.config.wait_time / 2
+        # else:
+        #     cool_down_time = self.config.wait_time / 4
 
         # if the program detects active_close_orders during startup, it is necessary to consider cooldown_time
         if self.last_open_order_time == 0 and len(self.active_close_orders) > 0:
@@ -276,30 +276,28 @@ class TradingBot:
                 self.order_canceled_event.set()
                 self.logger.log(f"[CLOSE] Error canceling order {order_id}: {e}", "ERROR")
 
-            if self.config.exchange == "backpack":
-                self.order_filled_amount = cancel_result.filled_size
-            else:
-                # Wait for cancel event or timeout
-                if not self.order_canceled_event.is_set():
-                    try:
-                        await asyncio.wait_for(self.order_canceled_event.wait(), timeout=5)
-                    except asyncio.TimeoutError:
-                        pass
-                try_count = 60
-                while try_count:
-                    try_count -= 1      
-                    try:                      
-                        order_info = await self.exchange_client.get_order_info(order_id)
-                    except Exception as e:
-                        self.logger.log(f"[CLOSE] Get order info exception of order {order_id}: {e}", "ERROR")
-                        await asyncio.sleep(1)
-                        continue
-                    self.order_filled_amount = order_info.filled_size
-                    if not self.order_filled_amount:                                
-                        self.logger.log(f"[CLOSE] Get filled amount fail of order {order_id}", "ERROR")
-                        await asyncio.sleep(1)
-                    else:
-                        break
+            # Wait for cancel event or timeout
+            if not self.order_canceled_event.is_set():
+                try:
+                    await asyncio.wait_for(self.order_canceled_event.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    pass
+            # Fetch order info to get filled amount
+            try_count = 60
+            while try_count:
+                try_count -= 1      
+                try:                      
+                    order_info = await self.exchange_client.get_order_info(order_id)
+                except Exception as e:
+                    self.logger.log(f"[CLOSE] Get order info exception of order {order_id}: {e}", "ERROR")
+                    await asyncio.sleep(1)
+                    continue
+                self.order_filled_amount = order_info.filled_size
+                if not self.order_filled_amount:                                
+                    self.logger.log(f"[CLOSE] Get filled amount fail of order {order_id}", "ERROR")
+                    await asyncio.sleep(1)
+                else:
+                    break
 
             if self.order_filled_amount and self.order_filled_amount > 0:
                 close_side = self.config.close_order_side
