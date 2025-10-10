@@ -227,76 +227,20 @@ class TradingBot:
         """Handle the result of an order placement."""
         order_id = order_result.order_id
         filled_price = order_result.price
-
-        if self.order_filled_event.is_set() or order_result.status == 'FILLED':
-            if self.config.boost_mode:
-                close_order_result = await self.exchange_client.place_market_order(
-                    self.config.contract_id,
-                    self.config.quantity,
-                    self.config.close_order_side
-                )
-                self.logger.log(f"[CLOSE] [{close_order_result.order_id}] New "
-                    f"{self.config.quantity} @ market", "INFO")
-            else:
-                self.last_open_order_time = time.time()
-                # Place close order
-                close_side = self.config.close_order_side
-                if close_side == 'sell':
-                    close_price = filled_price * (1 + self.config.take_profit/100)
-                else:
-                    close_price = filled_price * (1 - self.config.take_profit/100)
-
-                close_order_result = await self.exchange_client.place_close_order(
-                    self.config.contract_id,
-                    self.config.quantity,
-                    close_price,
-                    close_side
-                )
-                if self.config.exchange == "lighter":
-                    await asyncio.sleep(1)
-
-                if not close_order_result.success:
-                    self.logger.log(f"[CLOSE] Failed to place close order: {close_order_result.error_message}", "ERROR")
-                    raise Exception(f"[CLOSE] Failed to place close order: {close_order_result.error_message}")
-                
-                self.logger.log(f"[CLOSE] [{close_order_result.order_id}] {close_order_result.status} "
-                        f"{self.config.quantity} @ {close_price}", "INFO")            
-        else:
-            self.order_canceled_event.clear()
-            # Cancel the order if it's still open
-            self.logger.log(f"[OPEN] [{order_id}] Cancelling order and placing a new order", "INFO")
-            try:
-                cancel_result = await self.exchange_client.cancel_order(order_id)
-                if not cancel_result.success:
-                    self.order_canceled_event.set()
-                    self.logger.log(f"[CLOSE] Failed to cancel order {order_id}: {cancel_result.error_message}", "ERROR")
-                else:
-                    self.current_order_status = "CANCELED"
-
-            except Exception as e:
-                self.order_canceled_event.set()
-                self.logger.log(f"[CLOSE] Error canceling order {order_id}: {e}", "ERROR")
-
-            if self.config.exchange == "backpack":
-                self.order_filled_amount = cancel_result.filled_size
-            else:
-                # Wait for cancel event or timeout
-                if not self.order_canceled_event.is_set():
-                    try:
-                        await asyncio.wait_for(self.order_canceled_event.wait(), timeout=5)
-                    except asyncio.TimeoutError:
-                        order_info = await self.exchange_client.get_order_info(order_id)
-                        self.order_filled_amount = order_info.filled_size
-
-            if self.order_filled_amount > 0:
-                close_side = self.config.close_order_side
+        try:
+            if self.order_filled_event.is_set() or order_result.status == 'FILLED':
                 if self.config.boost_mode:
-                    close_order_result = await self.exchange_client.place_close_order(
+                    close_order_result = await self.exchange_client.place_market_order(
                         self.config.contract_id,
-                        self.order_filled_amount,
-                        close_side
+                        self.config.quantity,
+                        self.config.close_order_side
                     )
+                    self.logger.log(f"[CLOSE] [{close_order_result.order_id}] New "
+                        f"{self.config.quantity} @ market", "INFO")                        
                 else:
+                    self.last_open_order_time = time.time()
+                    # Place close order
+                    close_side = self.config.close_order_side
                     if close_side == 'sell':
                         close_price = filled_price * (1 + self.config.take_profit/100)
                     else:
@@ -304,21 +248,81 @@ class TradingBot:
 
                     close_order_result = await self.exchange_client.place_close_order(
                         self.config.contract_id,
-                        self.order_filled_amount,
+                        self.config.quantity,
                         close_price,
                         close_side
                     )
-                    if self.config.exchange == "lighter":
-                        await asyncio.sleep(1)
 
-                self.logger.log(f"[CLOSE] [{close_order_result.order_id}] {close_order_result.status} "
-                        f"{self.order_filled_amount} @ {close_price}", "INFO")
+                    await asyncio.sleep(1)
 
-                self.last_open_order_time = time.time()
+                    if not close_order_result.success:
+                        self.logger.log(f"[CLOSE] Failed to place close order: {close_order_result.error_message}", "ERROR")
+                        raise Exception(f"[CLOSE] Failed to place close order: {close_order_result.error_message}")
+                    
+                    self.logger.log(f"[CLOSE] [{close_order_result.order_id}] {close_order_result.status} "
+                            f"{self.config.quantity} @ {close_price}", "INFO")            
+            else:
+                self.order_canceled_event.clear()
+                # Cancel the order if it's still open
+                self.logger.log(f"[OPEN] [{order_id}] Cancelling order and placing a new order", "INFO")
+                try:
+                    cancel_result = await self.exchange_client.cancel_order(order_id)
+                    if not cancel_result.success:
+                        self.order_canceled_event.set()
+                        self.logger.log(f"[CLOSE] Failed to cancel order {order_id}: {cancel_result.error_message}", "ERROR")
+                    else:
+                        self.current_order_status = "CANCELED"
 
-                if not close_order_result.success:
-                    self.logger.log(f"[CLOSE] Failed to place close order: {close_order_result.error_message}", "ERROR")
-        return True
+                except Exception as e:
+                    self.order_canceled_event.set()
+                    self.logger.log(f"[CLOSE] Error canceling order {order_id}: {e}", "ERROR")
+
+                if self.config.exchange == "backpack":
+                    self.order_filled_amount = cancel_result.filled_size
+                    self.logger.log(f"[CLOSE] backpack cancel order filled amount: {self.order_filled_amount}", "ERROR")
+                else:
+                    # Wait for cancel event or timeout
+                    if not self.order_canceled_event.is_set():
+                        try:
+                            await asyncio.wait_for(self.order_canceled_event.wait(), timeout=5)
+                        except asyncio.TimeoutError:
+                            order_info = await self.exchange_client.get_order_info(order_id)
+                            self.order_filled_amount = order_info.filled_size
+
+                if self.order_filled_amount > 0:
+                    close_side = self.config.close_order_side
+                    if self.config.boost_mode:
+                        close_order_result = await self.exchange_client.place_close_order(
+                            self.config.contract_id,
+                            self.order_filled_amount,
+                            close_side
+                        )
+                    else:
+                        if close_side == 'sell':
+                            close_price = filled_price * (1 + self.config.take_profit/100)
+                        else:
+                            close_price = filled_price * (1 - self.config.take_profit/100)
+
+                        close_order_result = await self.exchange_client.place_close_order(
+                            self.config.contract_id,
+                            self.order_filled_amount,
+                            close_price,
+                            close_side
+                        )
+                        if self.config.exchange == "lighter":
+                            await asyncio.sleep(1)
+
+                    self.logger.log(f"[CLOSE] [{close_order_result.order_id}] {close_order_result.status} "
+                            f"{self.order_filled_amount} @ {close_price}", "INFO")
+
+                    self.last_open_order_time = time.time()
+
+                    if not close_order_result.success:
+                        self.logger.log(f"[CLOSE] Failed to place close order: {close_order_result.error_message}", "ERROR")
+            return True
+        except Exception as e:
+            self.logger.log(f"[CLOSE] Failed to handle close order: {e}", "ERROR")       
+            return False             
 
 
     async def _log_status_periodically(self):
@@ -380,6 +384,32 @@ class TradingBot:
                 raise ValueError(f"Invalid direction: {self.config.direction}")
         else:
             return True
+        
+
+    async def _rebalance_position(self):
+        try:
+            active_close_amount = sum(
+                Decimal(order.get('size', 0))
+                for order in self.active_close_orders
+                if isinstance(order, dict)
+            )
+
+            if self.position_amt > active_close_amount:                
+                # Close extra positions
+                close_order_result = await self.exchange_client.place_market_order(
+                    self.config.contract_id,
+                    self.config.quantity,
+                    self.config.close_order_side
+                )
+                self.logger.log(f"[CLOSE] [{close_order_result.order_id}] New "
+                    f"{self.config.quantity} @ market", "INFO")  
+            elif self.position_amt < active_close_amount:
+                self.logger.log("Position less than active closing amount", "ERROR")
+            return True
+        except Exception as e:
+            self.logger.log(f"[CLOSE] Failed to rebalance position: {e}", "ERROR")
+            return False
+                 
 
     async def _check_price_condition(self) -> bool:
         stop_trading = False
@@ -451,6 +481,7 @@ class TradingBot:
             await asyncio.sleep(5)
 
             # Main trading loop
+            mismatch_detected_count = 0
             while not self.shutdown_requested:
                 # Update active orders
                 try:
@@ -471,7 +502,7 @@ class TradingBot:
                         if isinstance(order, dict)
                     )
                     # Get current position
-                    self.position_amt = await self.exchange_client.get_account_positions()
+                    self.position_amt = await self.exchange_client.get_account_positions()                    
                 except Exception as e:
                     self.logger.log(f"Error fetching active orders or positions: {e}", "ERROR")
                     await asyncio.sleep(1)
@@ -487,27 +518,15 @@ class TradingBot:
                     error_message += "Please manually rebalance your position and take-profit orders\n"                    
                     error_message += f"Current Position: {self.position_amt} | Active closing orders/amount: {len(self.active_close_orders)}/{active_close_amount}\n"                    
                     self.logger.log(error_message, "ERROR")
-
                     await self._lark_bot_notify(error_message.lstrip())
-                    
-                    mismatch_detected = True
-                else:
-                    mismatch_detected = False
+                    # Increment mismatch counter                    
+                    mismatch_detected_count += 1
 
                 # Process mismatch
-                if mismatch_detected:
-                    if self.position_amt > active_close_amount:
-                        # Close extra positions
-                        close_order_result = await self.exchange_client.place_market_order(
-                            self.config.contract_id,
-                            self.config.quantity,
-                            self.config.close_order_side
-                        )
-                        self.logger.log(f"[CLOSE] [{close_order_result.order_id}] New "
-                            f"{self.config.quantity} @ market", "INFO")
-                    elif self.position_amt < active_close_amount:
-                        self.logger.log("Position less than active closing amount", "ERROR")
-                    await asyncio.sleep(60)
+                if mismatch_detected_count >= 3:
+                    mismatch_detected_count = 0
+                    self._rebalance_position()                    
+                    await asyncio.sleep(60)                    
                     continue
 
                 stop_trading, pause_trading = await self._check_price_condition()
@@ -531,11 +550,13 @@ class TradingBot:
                 else:
                     meet_grid_step_condition = await self._meet_grid_step_condition()
                     if not meet_grid_step_condition:
-                        await asyncio.sleep(1)
+                        await asyncio.sleep(5)
                         continue
 
-                    await self._place_and_monitor_open_order()
-                    self.last_close_orders += 1
+                    result = await self._place_and_monitor_open_order()
+                    if result:
+                        self.last_close_orders += 1
+                        await asyncio.sleep(5)  
 
         except KeyboardInterrupt:
             self.logger.log("Bot stopped by user")
