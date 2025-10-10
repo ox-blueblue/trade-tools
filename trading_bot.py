@@ -72,6 +72,7 @@ class TradingBot:
 
         # Trading state
         self.active_close_orders = []
+        self.position_amt = 0
         self.last_close_orders = 0
         self.last_open_order_time = 0
         self.last_log_time = 0
@@ -234,6 +235,8 @@ class TradingBot:
                     self.config.quantity,
                     self.config.close_order_side
                 )
+                self.logger.log(f"[CLOSE] [{close_order_result.order_id}] New "
+                    f"{self.config.quantity} @ market", "INFO")
             else:
                 self.last_open_order_time = time.time()
                 # Place close order
@@ -257,9 +260,7 @@ class TradingBot:
                     raise Exception(f"[CLOSE] Failed to place close order: {close_order_result.error_message}")
                 
                 self.logger.log(f"[CLOSE] [{close_order_result.order_id}] {close_order_result.status} "
-                        f"{self.config.quantity} @ {close_price}", "INFO")
-                return True
-
+                        f"{self.config.quantity} @ {close_price}", "INFO")            
         else:
             self.order_canceled_event.clear()
             # Cancel the order if it's still open
@@ -276,30 +277,18 @@ class TradingBot:
                 self.order_canceled_event.set()
                 self.logger.log(f"[CLOSE] Error canceling order {order_id}: {e}", "ERROR")
 
-            # Wait for cancel event or timeout
-            if not self.order_canceled_event.is_set():
-                try:
-                    await asyncio.wait_for(self.order_canceled_event.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    pass
-            # Fetch order info to get filled amount
-            try_count = 60
-            while try_count:
-                try_count -= 1      
-                try:                      
-                    order_info = await self.exchange_client.get_order_info(order_id)
-                except Exception as e:
-                    self.logger.log(f"[CLOSE] Get order info exception of order {order_id}: {e}", "ERROR")
-                    await asyncio.sleep(1)
-                    continue
-                self.order_filled_amount = order_info.filled_size
-                if not self.order_filled_amount:                                
-                    self.logger.log(f"[CLOSE] Get filled amount fail of order {order_id}", "ERROR")
-                    await asyncio.sleep(1)
-                else:
-                    break
+            if self.config.exchange == "backpack":
+                self.order_filled_amount = cancel_result.filled_size
+            else:
+                # Wait for cancel event or timeout
+                if not self.order_canceled_event.is_set():
+                    try:
+                        await asyncio.wait_for(self.order_canceled_event.wait(), timeout=5)
+                    except asyncio.TimeoutError:
+                        order_info = await self.exchange_client.get_order_info(order_id)
+                        self.order_filled_amount = order_info.filled_size
 
-            if self.order_filled_amount and self.order_filled_amount > 0:
+            if self.order_filled_amount > 0:
                 close_side = self.config.close_order_side
                 if self.config.boost_mode:
                     close_order_result = await self.exchange_client.place_close_order(
@@ -329,32 +318,14 @@ class TradingBot:
 
                 if not close_order_result.success:
                     self.logger.log(f"[CLOSE] Failed to place close order: {close_order_result.error_message}", "ERROR")
+        return True
 
-            return True
-
-        return False
 
     async def _log_status_periodically(self):
         """Log status information periodically, including positions."""
         if time.time() - self.last_log_time > 60 or self.last_log_time == 0:
             print("--------------------------------")
-            try:
-                # Get active orders
-                active_orders = await self.exchange_client.get_active_orders(self.config.contract_id)
-
-                # Filter close orders
-                self.active_close_orders = []
-                for order in active_orders:
-                    if order.side == self.config.close_order_side:
-                        self.active_close_orders.append({
-                            'id': order.order_id,
-                            'price': order.price,
-                            'size': order.size
-                        })
-
-                # Get positions
-                position_amt = await self.exchange_client.get_account_positions()
-
+            try:   
                 # Calculate active closing amount
                 active_close_amount = sum(
                     Decimal(order.get('size', 0))
@@ -362,36 +333,17 @@ class TradingBot:
                     if isinstance(order, dict)
                 )
 
-                self.logger.log(f"Current Position: {position_amt} | Active closing orders/amount: {len(self.active_close_orders)}/{active_close_amount} | "
+                self.logger.log(f"Current Position: {self.position_amt} | Active closing orders/amount: {len(self.active_close_orders)}/{active_close_amount} | "
                                 f"Gird except price: {self.grid_except_price}")
                 self.last_log_time = time.time()
-                # Check for position mismatch
-                if abs(position_amt - active_close_amount) > (2 * self.config.quantity):
-                    error_message = f"\n\nERROR: [{self.config.exchange.upper()}_{self.config.ticker.upper()}] "
-                    error_message += "Position mismatch detected\n"
-                    error_message += "###### ERROR ###### ERROR ###### ERROR ###### ERROR #####\n"
-                    error_message += "Please manually rebalance your position and take-profit orders\n"
-                    error_message += "请手动平衡当前仓位和正在关闭的仓位\n"
-                    error_message += f"current position: {position_amt} | active closing amount: {active_close_amount} | "f"Order quantity: {len(self.active_close_orders)}\n"
-                    error_message += "###### ERROR ###### ERROR ###### ERROR ###### ERROR #####\n"
-                    self.logger.log(error_message, "ERROR")
-
-                    await self._lark_bot_notify(error_message.lstrip())
-
-                    if not self.shutdown_requested:
-                        self.shutdown_requested = True
-
-                    mismatch_detected = True
-                else:
-                    mismatch_detected = False
-
-                return mismatch_detected
+                              
 
             except Exception as e:
                 self.logger.log(f"Error in periodic status check: {e}", "ERROR")
                 self.logger.log(f"Traceback: {traceback.format_exc()}", "ERROR")
 
             print("--------------------------------")
+        
 
     async def _meet_grid_step_condition(self) -> bool:
         if self.active_close_orders:
@@ -501,20 +453,62 @@ class TradingBot:
             # Main trading loop
             while not self.shutdown_requested:
                 # Update active orders
-                active_orders = await self.exchange_client.get_active_orders(self.config.contract_id)
-
-                # Filter close orders
-                self.active_close_orders = []
-                for order in active_orders:
-                    if order.side == self.config.close_order_side:
-                        self.active_close_orders.append({
-                            'id': order.order_id,
-                            'price': order.price,
-                            'size': order.size
-                        })
+                try:
+                    active_orders = await self.exchange_client.get_active_orders(self.config.contract_id)
+                    # Get active close orders
+                    self.active_close_orders = []
+                    for order in active_orders:
+                        if order.side == self.config.close_order_side:
+                            self.active_close_orders.append({
+                                'id': order.order_id,
+                                'price': order.price,
+                                'size': order.size
+                            })
+                    # Calculate active closing amount
+                    active_close_amount = sum(
+                        Decimal(order.get('size', 0))
+                        for order in self.active_close_orders
+                        if isinstance(order, dict)
+                    )
+                    # Get current position
+                    self.position_amt = await self.exchange_client.get_account_positions()
+                except Exception as e:
+                    self.logger.log(f"Error fetching active orders or positions: {e}", "ERROR")
+                    await asyncio.sleep(1)
+                    continue
 
                 # Periodic logging
-                mismatch_detected = await self._log_status_periodically()
+                await self._log_status_periodically()
+
+                # Check for position mismatch
+                if abs(self.position_amt - active_close_amount) > (1 * self.config.quantity):
+                    error_message = f"\n\nERROR: [{self.config.exchange.upper()}_{self.config.ticker.upper()}] "
+                    error_message += "Position mismatch detected\n"                    
+                    error_message += "Please manually rebalance your position and take-profit orders\n"                    
+                    error_message += f"Current Position: {self.position_amt} | Active closing orders/amount: {len(self.active_close_orders)}/{active_close_amount}\n"                    
+                    self.logger.log(error_message, "ERROR")
+
+                    await self._lark_bot_notify(error_message.lstrip())
+                    
+                    mismatch_detected = True
+                else:
+                    mismatch_detected = False
+
+                # Process mismatch
+                if mismatch_detected:
+                    if self.position_amt > active_close_amount:
+                        # Close extra positions
+                        close_order_result = await self.exchange_client.place_market_order(
+                            self.config.contract_id,
+                            self.config.quantity,
+                            self.config.close_order_side
+                        )
+                        self.logger.log(f"[CLOSE] [{close_order_result.order_id}] New "
+                            f"{self.config.quantity} @ market", "INFO")
+                    elif self.position_amt < active_close_amount:
+                        self.logger.log("Position less than active closing amount", "ERROR")
+                    await asyncio.sleep(60)
+                    continue
 
                 stop_trading, pause_trading = await self._check_price_condition()
                 if stop_trading:
@@ -527,22 +521,21 @@ class TradingBot:
                 if pause_trading:
                     await asyncio.sleep(5)
                     continue
+            
+                wait_time = self._calculate_wait_time()
 
-                if not mismatch_detected:
-                    wait_time = self._calculate_wait_time()
-
-                    if wait_time > 0:
-                        self.logger.log(f"Wait for {wait_time}s...", "INFO")
-                        await asyncio.sleep(wait_time)
+                if wait_time > 0:
+                    self.logger.log(f"Wait for {wait_time}s...", "INFO")
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    meet_grid_step_condition = await self._meet_grid_step_condition()
+                    if not meet_grid_step_condition:
+                        await asyncio.sleep(1)
                         continue
-                    else:
-                        meet_grid_step_condition = await self._meet_grid_step_condition()
-                        if not meet_grid_step_condition:
-                            await asyncio.sleep(1)
-                            continue
 
-                        await self._place_and_monitor_open_order()
-                        self.last_close_orders += 1
+                    await self._place_and_monitor_open_order()
+                    self.last_close_orders += 1
 
         except KeyboardInterrupt:
             self.logger.log("Bot stopped by user")
