@@ -178,14 +178,14 @@ class TradingBot:
         #     cool_down_time = self.config.wait_time / 4
 
         # if the program detects active_close_orders during startup, not set cooldown_time
-        if self.last_open_order_time == 0 and len(self.active_close_orders) > 0:
+        if self.last_open_order_time == 0:
             self.last_open_order_time = time.time()
             return 0
 
         if time.time() - self.last_open_order_time > cool_down_time:
             return 0
         else:
-            return 1 
+            return int(cool_down_time - (time.time() - self.last_open_order_time))
 
     async def _place_and_monitor_open_order(self) -> bool:
         """Place an order and monitor its execution."""
@@ -280,7 +280,7 @@ class TradingBot:
 
                 if self.config.exchange == "backpack":
                     self.order_filled_amount = cancel_result.filled_size
-                    self.logger.log(f"[CLOSE] backpack cancel order filled amount: {self.order_filled_amount}", "INFO")
+                    self.logger.log(f"[CALCEL] backpack cancel order filled amount: {self.order_filled_amount}", "DEBUG")
                 else:
                     # Wait for cancel event or timeout
                     if not self.order_canceled_event.is_set():
@@ -352,10 +352,18 @@ class TradingBot:
 
     async def _meet_grid_step_condition(self) -> bool:
         if self.active_close_orders:
-            picker = min if self.config.direction == "buy" else max
-            next_close_order = picker(self.active_close_orders, key=lambda o: o["price"])
-            next_close_price = next_close_order["price"]
-
+            # 多订单的时候选择第二个作为基准，避免订单密集时，步长失效
+            step_count = 1
+            # sort active close orders by price by direction
+            if len(self.active_close_orders) > 1:
+                self.active_close_orders = sorted(self.active_close_orders, key=lambda o: o["price"], reverse=self.config.direction == "sell")
+                next_close_order = self.active_close_orders[1]
+                next_close_price = next_close_order["price"]
+                step_count = 2
+            elif len(self.active_close_orders) == 1:            
+                next_close_order = self.active_close_orders[0]
+                next_close_price = next_close_order["price"]
+            self.logger.log(f"step_count: {step_count}, next_close_price: {next_close_price}", "DEBUG")
             try:
                 best_bid, best_ask = await self.exchange_client.fetch_bbo_prices(self.config.contract_id)
                 if best_bid <= 0 or best_ask <= 0 or best_bid >= best_ask:
@@ -367,19 +375,19 @@ class TradingBot:
 
             if self.config.direction == "buy":
                 new_order_close_price = best_ask * (1 + self.config.take_profit/100)
-                if next_close_price / new_order_close_price > 1 + self.config.grid_step/100:
+                if next_close_price / new_order_close_price > 1 + self.config.grid_step/100*step_count:
                     return True
                 else:
                     self.grid_except_price = round(next_close_price / 
-                                                   (1 + self.config.grid_step/100) / (1 - self.config.take_profit/100), 2)
+                                                   (1 + self.config.grid_step/100*step_count) / (1 - self.config.take_profit/100), 2)
                     return False
             elif self.config.direction == "sell":
                 new_order_close_price = best_bid * (1 - self.config.take_profit/100)
-                if new_order_close_price / next_close_price > 1 + self.config.grid_step/100:
+                if new_order_close_price / next_close_price > 1 + self.config.grid_step/100*step_count:
                     return True
                 else:
                     self.grid_except_price = round(next_close_price / 
-                                                   (1 + self.config.grid_step/100) / (1 - self.config.take_profit/100), 2)
+                                                   (1 + self.config.grid_step/100*step_count) / (1 - self.config.take_profit/100), 2)
                     return False
             else:
                 raise ValueError(f"Invalid direction: {self.config.direction}")
@@ -486,17 +494,28 @@ class TradingBot:
             mismatch_detected_count = 0
             while not self.shutdown_requested:      
                 # Update active orders
+                active_close_orders_filled = False
                 try:
-                    active_orders = await self.exchange_client.get_active_orders(self.config.contract_id)
+                    for _ in range(3):
+                        active_orders = await self.exchange_client.get_active_orders(self.config.contract_id)
+                        if len(active_orders) > 0:
+                            break
+                        await asyncio.sleep(1)                       
+
                     # Get active close orders
-                    self.active_close_orders = []
+                    active_close_orders_tmp = []
                     for order in active_orders:
                         if order.side == self.config.close_order_side:
-                            self.active_close_orders.append({
+                            active_close_orders_tmp.append({
                                 'id': order.order_id,
                                 'price': order.price,
                                 'size': order.size
                             })
+                    if len(active_close_orders_tmp) < len(self.active_close_orders):
+                        active_close_orders_filled = True
+                        self.logger.log(f"Active closing orders from {len(self.active_close_orders)} to {len(active_close_orders_tmp)}", "INFO")
+
+                    self.active_close_orders = active_close_orders_tmp
                     # Calculate active closing amount
                     active_close_amount = sum(
                         Decimal(order.get('size', 0))
@@ -541,21 +560,26 @@ class TradingBot:
                     continue
 
                 if pause_trading:
+                    self.logger.log(f"Pause trading due to pause price", "INFO")
                     await asyncio.sleep(5)
                     continue
             
-                wait_time = self._calculate_wait_time()
-                if wait_time > 0:                    
-                    await asyncio.sleep(1)
-                    continue
-                else:
+                # 订单有成交，则立即进行下一次交易
+                if not active_close_orders_filled:
                     meet_grid_step_condition = await self._meet_grid_step_condition()
                     if not meet_grid_step_condition:
+                        self.logger.log(f"Grid step condition not met", "DEBUG")
                         await asyncio.sleep(1)
                         continue
 
-                    await self._place_and_monitor_open_order()                   
-                    self.last_close_orders += 1                             
+                    wait_time = self._calculate_wait_time()
+                    if wait_time > 0:             
+                        self.logger.log(f"Wait time condition not met, remain {wait_time} seconds", "DEBUG")       
+                        await asyncio.sleep(1)
+                        continue 
+                # Condition met, place new open order
+                await self._place_and_monitor_open_order()                   
+                self.last_close_orders += 1                             
 
         except KeyboardInterrupt:
             self.logger.log("Bot stopped by user")
