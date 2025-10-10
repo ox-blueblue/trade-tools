@@ -184,7 +184,7 @@ class TradingBot:
         if time.time() - self.last_open_order_time > cool_down_time:
             return 0
         else:
-            return int(cool_down_time - (time.time() - self.last_open_order_time))
+            return 1 
 
     async def _place_and_monitor_open_order(self) -> bool:
         """Place an order and monitor its execution."""
@@ -279,7 +279,7 @@ class TradingBot:
 
                 if self.config.exchange == "backpack":
                     self.order_filled_amount = cancel_result.filled_size
-                    self.logger.log(f"[CLOSE] backpack cancel order filled amount: {self.order_filled_amount}", "ERROR")
+                    self.logger.log(f"[CLOSE] backpack cancel order filled amount: {self.order_filled_amount}", "INFO")
                 else:
                     # Wait for cancel event or timeout
                     if not self.order_canceled_event.is_set():
@@ -450,7 +450,7 @@ class TradingBot:
         if lark_token:
             async with LarkBot(lark_token) as bot:
                 await bot.send_text(message)
-
+    
     async def run(self):
         """Main trading loop."""
         try:
@@ -481,8 +481,9 @@ class TradingBot:
             await asyncio.sleep(5)
 
             # Main trading loop
+            # wait should be set to 1 second because for judge new market and order
             mismatch_detected_count = 0
-            while not self.shutdown_requested:
+            while not self.shutdown_requested:      
                 # Update active orders
                 try:
                     active_orders = await self.exchange_client.get_active_orders(self.config.contract_id)
@@ -512,22 +513,23 @@ class TradingBot:
                 await self._log_status_periodically()
 
                 # Check for position mismatch
-                if abs(self.position_amt - active_close_amount) > (1 * self.config.quantity):
+                if abs(self.position_amt - active_close_amount) > (1 * self.config.quantity):                    
+                    mismatch_detected_count += 1
+                else:
+                    mismatch_detected_count = 0
+
+                # Process mismatch
+                if mismatch_detected_count >= 3:
+                    mismatch_detected_count = 0
                     error_message = f"\n\nERROR: [{self.config.exchange.upper()}_{self.config.ticker.upper()}] "
                     error_message += "Position mismatch detected\n"                    
                     error_message += "Please manually rebalance your position and take-profit orders\n"                    
                     error_message += f"Current Position: {self.position_amt} | Active closing orders/amount: {len(self.active_close_orders)}/{active_close_amount}\n"                    
                     self.logger.log(error_message, "ERROR")
                     await self._lark_bot_notify(error_message.lstrip())
-                    # Increment mismatch counter                    
-                    mismatch_detected_count += 1
-
-                # Process mismatch
-                if mismatch_detected_count >= 3:
-                    mismatch_detected_count = 0
-                    self._rebalance_position()                    
-                    await asyncio.sleep(60)                    
-                    continue
+                    if not self._rebalance_position():
+                        await asyncio.sleep(1)                    
+                        continue
 
                 stop_trading, pause_trading = await self._check_price_condition()
                 if stop_trading:
@@ -542,21 +544,17 @@ class TradingBot:
                     continue
             
                 wait_time = self._calculate_wait_time()
-
-                if wait_time > 0:
-                    self.logger.log(f"Wait for {wait_time}s...", "INFO")
-                    await asyncio.sleep(wait_time)
+                if wait_time > 0:                    
+                    await asyncio.sleep(1)
                     continue
                 else:
                     meet_grid_step_condition = await self._meet_grid_step_condition()
                     if not meet_grid_step_condition:
-                        await asyncio.sleep(5)
+                        await asyncio.sleep(1)
                         continue
 
-                    result = await self._place_and_monitor_open_order()
-                    if result:
-                        self.last_close_orders += 1
-                        await asyncio.sleep(5)  
+                    await self._place_and_monitor_open_order()                   
+                    self.last_close_orders += 1                             
 
         except KeyboardInterrupt:
             self.logger.log("Bot stopped by user")
