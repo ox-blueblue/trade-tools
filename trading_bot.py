@@ -523,11 +523,11 @@ class TradingBot:
                     mismatch_detected_count = 0
                     error_message = f"\n\nERROR: [{self.config.exchange.upper()}_{self.config.ticker.upper()}] "
                     error_message += "Position mismatch detected\n"                    
-                    error_message += "Please manually rebalance your position and take-profit orders\n"                    
+                    error_message += "will auto rebalance position\n"
                     error_message += f"Current Position: {self.position_amt} | Active closing orders/amount: {len(self.active_close_orders)}/{active_close_amount}\n"                    
                     self.logger.log(error_message, "ERROR")
                     await self._lark_bot_notify(error_message.lstrip())
-                    if not self._rebalance_position():
+                    if not await self._rebalance_position():
                         await asyncio.sleep(1)                    
                         continue
 
