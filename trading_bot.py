@@ -177,9 +177,10 @@ class TradingBot:
         # else:
         #     cool_down_time = self.config.wait_time / 4
 
-        # if the program detects active_close_orders during startup, it is necessary to consider cooldown_time
+        # if the program detects active_close_orders during startup, not set cooldown_time
         if self.last_open_order_time == 0 and len(self.active_close_orders) > 0:
             self.last_open_order_time = time.time()
+            return 0
 
         if time.time() - self.last_open_order_time > cool_down_time:
             return 0
@@ -522,9 +523,9 @@ class TradingBot:
                 if mismatch_detected_count >= 3:
                     mismatch_detected_count = 0
                     error_message = f"\n\nERROR: [{self.config.exchange.upper()}_{self.config.ticker.upper()}] "
-                    error_message += "Position mismatch detected\n"                    
-                    error_message += "will auto rebalance position\n"
+                    error_message += "Position mismatch detected\n"  
                     error_message += f"Current Position: {self.position_amt} | Active closing orders/amount: {len(self.active_close_orders)}/{active_close_amount}\n"                    
+                    error_message += "Will auto rebalance position\n"
                     self.logger.log(error_message, "ERROR")
                     await self._lark_bot_notify(error_message.lstrip())
                     if not await self._rebalance_position():
