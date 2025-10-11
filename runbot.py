@@ -49,6 +49,8 @@ def parse_arguments():
                         'Sell: pause if price <= pause-price. (default: -1, no pause)')
     parser.add_argument('--boost', action='store_true',
                         help='Use the Boost mode for volume boosting')
+    parser.add_argument('--rebalance', action='store_true',
+                        help='Auto rebalance for position mismatch')
 
     return parser.parse_args()
 
@@ -116,7 +118,8 @@ async def main():
         grid_step=Decimal(args.grid_step),
         stop_price=Decimal(args.stop_price),
         pause_price=Decimal(args.pause_price),
-        boost_mode=args.boost
+        boost_mode=args.boost,
+        auto_rebalance=args.rebalance
     )
 
     # Create and run the bot

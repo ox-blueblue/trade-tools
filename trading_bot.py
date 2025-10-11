@@ -31,6 +31,7 @@ class TradingConfig:
     stop_price: Decimal
     pause_price: Decimal
     boost_mode: bool
+    auto_rebalance: bool
 
     @property
     def close_order_side(self) -> str:
@@ -484,6 +485,7 @@ class TradingBot:
             self.logger.log(f"Stop Price: {self.config.stop_price}", "INFO")
             self.logger.log(f"Pause Price: {self.config.pause_price}", "INFO")
             self.logger.log(f"Boost Mode: {self.config.boost_mode}", "INFO")
+            self.logger.log(f"Auto Rebalance: {self.config.auto_rebalance}", "INFO")
             self.logger.log("=============================", "INFO")
 
             # Capture the running event loop for thread-safe callbacks
@@ -501,6 +503,8 @@ class TradingBot:
                 # Update active orders
                 active_close_orders_filled = False
                 try:
+                    # 偶尔会取不到订单，重试3次
+                    active_orders = []
                     for _ in range(3):
                         active_orders = await self.exchange_client.get_active_orders(self.config.contract_id)
                         if len(active_orders) > 0:
@@ -519,12 +523,12 @@ class TradingBot:
                     
                     if len(active_close_orders_tmp) < len(self.active_close_orders):
                         active_close_orders_filled = True
-                        self.logger.log(f"Active closing orders from {len(self.active_close_orders)} to {len(active_close_orders_tmp)}", "INFO")
+                        self.logger.log(f"Active closing orders from {len(self.active_close_orders)} to {len(active_close_orders_tmp)}", "DEBUG")
 
                     self.active_close_orders = active_close_orders_tmp
                     # buy 的情况下从小到大排序，sell 的情况下从大到小排序
                     self.active_close_orders = sorted(self.active_close_orders, key=lambda o: o["price"], reverse=self.config.direction == "sell")
-                    
+
                     # Calculate active closing amount
                     active_close_amount = sum(
                         Decimal(order.get('size', 0))
@@ -553,10 +557,11 @@ class TradingBot:
                     error_message = f"\n\nERROR: [{self.config.exchange.upper()}_{self.config.ticker.upper()}] "
                     error_message += "Position mismatch detected\n"  
                     error_message += f"Current Position: {self.position_amt} | Active closing orders/amount: {len(self.active_close_orders)}/{active_close_amount}\n"                    
-                    error_message += "Will auto rebalance position\n"
                     self.logger.log(error_message, "ERROR")
                     await self._lark_bot_notify(error_message.lstrip())
-                    await self._rebalance_position()
+                    if self.config.auto_rebalance:
+                        self.logger.log("Auto rebalance position", "INFO")
+                        await self._rebalance_position()
                     await asyncio.sleep(1)                    
                     continue
 
