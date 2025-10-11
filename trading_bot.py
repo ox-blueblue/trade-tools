@@ -331,7 +331,7 @@ class TradingBot:
 
                 if self.config.exchange == "backpack" or self.config.exchange == "extended":
                     self.order_filled_amount = cancel_result.filled_size
-                    self.logger.log(f"[CALCEL] backpack cancel order filled amount: {self.order_filled_amount}", "DEBUG")
+                    self.logger.log(f"[CALCEL] cancel order filled amount: {self.order_filled_amount}", "INFO")
                 else:
                     # Wait for cancel event or timeout
                     if not self.order_canceled_event.is_set():
@@ -454,15 +454,18 @@ class TradingBot:
                 if isinstance(order, dict)
             )
 
-            if self.position_amt > active_close_amount:                
+            if self.position_amt > active_close_amount:    
+                # 增加一个限价单
+                close_price = await self.exchange_client.get_order_price(self.config.direction)            
                 # Close extra positions
-                close_order_result = await self.exchange_client.place_market_order(
+                close_order_result = await self.exchange_client.place_close_order(
                     self.config.contract_id,
                     self.config.quantity,
+                    close_price,
                     self.config.close_order_side
                 )
                 self.logger.log(f"[CLOSE] [{close_order_result.order_id}] New "
-                    f"{self.config.quantity} @ market", "INFO")  
+                    f"{self.config.quantity} @ {close_price}", "INFO")  
             elif self.position_amt < active_close_amount:
                 self.logger.log("Position less than active closing amount", "ERROR")                
             
