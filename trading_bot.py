@@ -140,9 +140,14 @@ class TradingBot:
 
                         if self.order_filled_amount > 0:
                             self.logger.log_transaction(order_id, side, self.order_filled_amount, message.get('price'), status)
-
-                    self.logger.log(f"[{order_type}] [{order_id}] {status} "
-                                    f"{message.get('size')} @ {message.get('price')}", "INFO")
+                            
+                    # PATCH
+                    if self.config.exchange == "extended":
+                        self.logger.log(f"[{order_type}] [{order_id}] {status} "
+                                        f"{Decimal(message.get('size')) - filled_size} @ {message.get('price')}", "INFO")
+                    else:
+                        self.logger.log(f"[{order_type}] [{order_id}] {status} "
+                                        f"{message.get('size')} @ {message.get('price')}", "INFO")
                 elif status == "PARTIALLY_FILLED":
                     self.logger.log(f"[{order_type}] [{order_id}] {status} "
                                     f"{filled_size} @ {message.get('price')}", "INFO")
@@ -239,6 +244,7 @@ class TradingBot:
                     )
                     self.logger.log(f"[CLOSE] [{close_order_result.order_id}] New "
                         f"{self.config.quantity} @ market", "INFO")                        
+
                 else:
                     self.last_open_order_time = time.time()
                     # Place close order
@@ -263,10 +269,54 @@ class TradingBot:
                     
                     self.logger.log(f"[CLOSE] [{close_order_result.order_id}] {close_order_result.status} "
                             f"{self.config.quantity} @ {close_price}", "INFO")            
+
+                return True
             else:
+                new_order_price = await self.exchange_client.get_order_price(self.config.direction)
+
+                def should_wait(direction: str, new_order_price: Decimal, order_result_price: Decimal) -> bool:
+                    if direction == "buy":
+                        return new_order_price <= order_result_price
+                    elif direction == "sell":
+                        return new_order_price >= order_result_price
+                    return False
+
+                if self.config.exchange == "lighter":
+                    current_order_status = self.exchange_client.current_order.status
+                else:
+                    order_info = await self.exchange_client.get_order_info(order_id)
+                    current_order_status = order_info.status
+
+                while (
+                    should_wait(self.config.direction, new_order_price, order_result.price)
+                    and current_order_status == "OPEN"
+                ):
+                    self.logger.log(f"[OPEN] [{order_id}] Waiting for order to be filled @ {order_result.price}", "INFO")
+                    await asyncio.sleep(5)
+                    if self.config.exchange == "lighter":
+                        current_order_status = self.exchange_client.current_order.status
+                    else:
+                        order_info = await self.exchange_client.get_order_info(order_id)
+                        if order_info is not None:
+                            current_order_status = order_info.status
+                    new_order_price = await self.exchange_client.get_order_price(self.config.direction)
+
                 self.order_canceled_event.clear()
                 # Cancel the order if it's still open
                 self.logger.log(f"[OPEN] [{order_id}] Cancelling order and placing a new order", "INFO")
+
+                if self.config.exchange == "lighter":
+                    cancel_result = await self.exchange_client.cancel_order(order_id)
+                    start_time = time.time()
+                    while (time.time() - start_time < 10 and self.exchange_client.current_order.status != 'CANCELED' and
+                            self.exchange_client.current_order.status != 'FILLED'):
+                        await asyncio.sleep(0.1)
+
+                    if self.exchange_client.current_order.status not in ['CANCELED', 'FILLED']:
+                        raise Exception(f"[OPEN] Error cancelling order: {self.exchange_client.current_order.status}")
+                    else:
+                        self.order_filled_amount = self.exchange_client.current_order.filled_size
+
                 try:
                     cancel_result = await self.exchange_client.cancel_order(order_id)
                     if not cancel_result.success:
@@ -279,7 +329,7 @@ class TradingBot:
                     self.order_canceled_event.set()
                     self.logger.log(f"[CLOSE] Error canceling order {order_id}: {e}", "ERROR")
 
-                if self.config.exchange == "backpack":
+                if self.config.exchange == "backpack" or self.config.exchange == "extended":
                     self.order_filled_amount = cancel_result.filled_size
                     self.logger.log(f"[CALCEL] backpack cancel order filled amount: {self.order_filled_amount}", "DEBUG")
                 else:
@@ -297,8 +347,10 @@ class TradingBot:
                         close_order_result = await self.exchange_client.place_close_order(
                             self.config.contract_id,
                             self.order_filled_amount,
+                            filled_price,
                             close_side
                         )
+
                     else:
                         if close_side == 'sell':
                             close_price = filled_price * (1 + self.config.take_profit/100)
