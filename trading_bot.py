@@ -413,7 +413,14 @@ class TradingBot:
                 self.logger.log(f"[CLOSE] [{close_order_result.order_id}] New "
                     f"{self.config.quantity} @ market", "INFO")  
             elif self.position_amt < active_close_amount:
-                self.logger.log("Position less than active closing amount", "ERROR")
+                self.logger.log("Position less than active closing amount", "ERROR")                
+            
+                order_id = self.active_close_orders[-1]["id"]
+                cancel_result = await self.exchange_client.cancel_order(order_id)                
+                if not cancel_result.success:
+                    self.logger.log(f"[CANCEL] Failed to cancel order {order_id}: {cancel_result.error_message}", "ERROR")                
+                else:
+                    self.logger.log(f"[CANCEL] Successfully canceled order {order_id}", "INFO")
             return True
         except Exception as e:
             self.logger.log(f"[CLOSE] Failed to rebalance position: {e}", "ERROR")
@@ -547,9 +554,9 @@ class TradingBot:
                     error_message += "Will auto rebalance position\n"
                     self.logger.log(error_message, "ERROR")
                     await self._lark_bot_notify(error_message.lstrip())
-                    if not await self._rebalance_position():
-                        await asyncio.sleep(1)                    
-                        continue
+                    await self._rebalance_position()
+                    await asyncio.sleep(1)                    
+                    continue
 
                 stop_trading, pause_trading = await self._check_price_condition()
                 if stop_trading:
