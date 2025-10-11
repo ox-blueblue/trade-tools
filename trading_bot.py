@@ -353,10 +353,8 @@ class TradingBot:
     async def _meet_grid_step_condition(self) -> bool:
         if self.active_close_orders:
             # 多订单的时候选择第二个作为基准，避免订单密集时，步长失效
-            step_count = 1
-            # sort active close orders by price by direction
-            if len(self.active_close_orders) > 1:
-                self.active_close_orders = sorted(self.active_close_orders, key=lambda o: o["price"], reverse=self.config.direction == "sell")
+            step_count = 1            
+            if len(self.active_close_orders) > 1:                
                 next_close_order = self.active_close_orders[1]
                 next_close_price = next_close_order["price"]
                 step_count = 2
@@ -518,11 +516,15 @@ class TradingBot:
                                 'price': order.price,
                                 'size': order.size
                             })
+                    
                     if len(active_close_orders_tmp) < len(self.active_close_orders):
                         active_close_orders_filled = True
                         self.logger.log(f"Active closing orders from {len(self.active_close_orders)} to {len(active_close_orders_tmp)}", "INFO")
 
                     self.active_close_orders = active_close_orders_tmp
+                    # buy 的情况下从小到大排序，sell 的情况下从大到小排序
+                    self.active_close_orders = sorted(self.active_close_orders, key=lambda o: o["price"], reverse=self.config.direction == "sell")
+                    
                     # Calculate active closing amount
                     active_close_amount = sum(
                         Decimal(order.get('size', 0))
