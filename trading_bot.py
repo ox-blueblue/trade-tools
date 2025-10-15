@@ -469,7 +469,7 @@ class TradingBot:
             elif self.position_amt < active_close_amount:
                 self.logger.log("Position less than active closing amount", "ERROR")                
             
-                order_id = self.active_close_orders[-1]["id"]
+                order_id = self.active_close_orders[0]["id"]
                 cancel_result = await self.exchange_client.cancel_order(order_id)                
                 if not cancel_result.success:
                     self.logger.log(f"[CANCEL] Failed to cancel order {order_id}: {cancel_result.error_message}", "ERROR")                
