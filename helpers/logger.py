@@ -33,12 +33,18 @@ class TradingLogger:
         self.log_file = os.path.join(logs_dir, order_file_name)
         self.debug_log_file = os.path.join(logs_dir, debug_log_file_name)
         self.timezone = pytz.timezone(os.getenv('TIMEZONE', 'Asia/Shanghai'))
-        self.logger = self._setup_logger(log_to_console)
 
-    def _setup_logger(self, log_to_console: bool) -> logging.Logger:
+        log_to_console = os.getenv('LOG_TO_CONSOLE', 'false').lower() == 'true'
+        log_to_file = os.getenv('LOG_TO_FILE', 'false').lower() == 'true'
+        log_console_level = os.getenv('LOG_CONSOLE_LEVEL', 'INFO')
+        log_file_level = os.getenv('LOG_FILE_LEVEL', 'INFO')
+        self.logger = self._setup_logger(log_to_console, log_console_level, log_to_file, log_file_level)
+        self.logger.debug(f"set log level to {log_console_level} for console and {log_file_level} for file")
+
+    def _setup_logger(self, log_to_console: bool, log_console_level: str, log_to_file: bool, log_file_level: str) -> logging.Logger:
         """Setup the logger with proper configuration."""
         logger = logging.getLogger(f"trading_bot_{self.exchange}_{self.ticker}")
-        logger.setLevel(logging.INFO)
+        logger.setLevel(logging.DEBUG)
 
         # Prevent propagation to root logger to avoid duplicate messages
         logger.propagate = False
@@ -64,16 +70,17 @@ class TradingLogger:
             tz=self.timezone
         )
 
-        # File handler
-        file_handler = logging.FileHandler(self.debug_log_file)
-        file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
+        # File handler if requested
+        if log_to_file:
+            file_handler = logging.FileHandler(self.debug_log_file)
+            file_handler.setLevel(self.convert_log_level(log_file_level))
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
 
         # Console handler if requested
         if log_to_console:
             console_handler = logging.StreamHandler()
-            console_handler.setLevel(logging.INFO)
+            console_handler.setLevel(self.convert_log_level(log_console_level))
             console_handler.setFormatter(formatter)
             logger.addHandler(console_handler)
 
@@ -92,6 +99,20 @@ class TradingLogger:
             self.logger.error(formatted_message)
         else:
             self.logger.info(formatted_message)
+
+    def convert_log_level(self, level: str) -> int:
+        """Convert log level string to logging level integer."""
+        level = level.upper()
+        if level == "DEBUG":
+            return logging.DEBUG
+        elif level == "INFO":
+            return logging.INFO
+        elif level == "WARNING":
+            return logging.WARNING
+        elif level == "ERROR":
+            return logging.ERROR
+        else:
+            return logging.INFO
 
     def log_transaction(self, order_id: str, side: str, quantity: Decimal, price: Decimal, status: str):
         """Log a transaction to CSV file."""

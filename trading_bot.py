@@ -13,7 +13,7 @@ from typing import Optional
 from exchanges import ExchangeFactory
 from helpers import TradingLogger
 from helpers.lark_bot import LarkBot
-
+from helpers.telegram_bot import TelegramBot
 
 @dataclass
 class TradingConfig:
@@ -77,13 +77,18 @@ class TradingBot:
         self.last_close_orders = 0
         self.last_open_order_time = 0
         self.last_log_time = 0
+        self.last_notice_time = 0
         self.current_order_status = None
         self.order_filled_event = asyncio.Event()
         self.order_canceled_event = asyncio.Event()
         self.shutdown_requested = False
         self.loop = None
         self.grid_except_price = None 
-
+        # 统计信息
+        self.order_open_count = 0
+        self.order_close_count = 0
+        self.order_rebalance_count = 0
+        
         # Register order callback
         self._setup_websocket_handlers()
 
@@ -119,6 +124,7 @@ class TradingBot:
 
                 if status == 'FILLED':
                     if order_type == "OPEN":
+                        self.order_open_count += 1
                         self.order_filled_amount = filled_size
                         # Ensure thread-safe interaction with asyncio event loop
                         if self.loop is not None:
@@ -126,6 +132,8 @@ class TradingBot:
                         else:
                             # Fallback (should not happen after run() starts)
                             self.order_filled_event.set()
+                    else:
+                        self.order_close_count += 1
 
                     self.logger.log(f"[{order_type}] [{order_id}] {status} "
                                     f"{message.get('size')} @ {message.get('price')}", "INFO")
@@ -402,6 +410,18 @@ class TradingBot:
 
             print("--------------------------------")
         
+        if time.time() - self.last_notice_time > 60*60 or self.last_notice_time == 0:            
+            try:   
+                msg = f"period notice: [open: {self.order_open_count}, close: {self.order_close_count}, rebalance: {self.order_rebalance_count}]"
+                self.logger.log(msg)
+                self._tg_bot_notify(msg)
+
+                self.last_notice_time = time.time()
+
+            except Exception as e:
+                self.logger.log(f"Error in periodic notice: {e}", "ERROR")
+                self.logger.log(f"Traceback: {traceback.format_exc()}", "ERROR")
+
 
     async def _meet_grid_step_condition(self) -> bool:
         if self.active_close_orders:
@@ -475,6 +495,7 @@ class TradingBot:
                     self.logger.log(f"[CANCEL] Failed to cancel order {order_id}: {cancel_result.error_message}", "ERROR")                
                 else:
                     self.logger.log(f"[CANCEL] Successfully canceled order {order_id}", "INFO")
+            self.order_rebalance_count += 1
             return True
         except Exception as e:
             self.logger.log(f"[CLOSE] Failed to rebalance position: {e}", "ERROR")
@@ -520,6 +541,13 @@ class TradingBot:
         if lark_token:
             async with LarkBot(lark_token) as bot:
                 await bot.send_text(message)
+
+    def _tg_bot_notify(self, message: str):
+        token=os.getenv("TELEGRAM_BOT_TOKEN")
+        chat_id=os.getenv("TELEGRAM_CHAT_ID")
+        if token and chat_id:
+            with TelegramBot(token, chat_id) as bot:
+                bot.send_text(message)
     
     async def run(self):
         """Main trading loop."""
@@ -527,21 +555,24 @@ class TradingBot:
             self.config.contract_id, self.config.tick_size = await self.exchange_client.get_contract_attributes()
 
             # Log current TradingConfig
-            self.logger.log("=== Trading Configuration ===", "INFO")
-            self.logger.log(f"Ticker: {self.config.ticker}", "INFO")
-            self.logger.log(f"Contract ID: {self.config.contract_id}", "INFO")
-            self.logger.log(f"Quantity: {self.config.quantity}", "INFO")
-            self.logger.log(f"Take Profit: {self.config.take_profit}%", "INFO")
-            self.logger.log(f"Direction: {self.config.direction}", "INFO")
-            self.logger.log(f"Max Orders: {self.config.max_orders}", "INFO")
-            self.logger.log(f"Wait Time: {self.config.wait_time}s", "INFO")
-            self.logger.log(f"Exchange: {self.config.exchange}", "INFO")
-            self.logger.log(f"Grid Step: {self.config.grid_step}%", "INFO")
-            self.logger.log(f"Stop Price: {self.config.stop_price}", "INFO")
-            self.logger.log(f"Pause Price: {self.config.pause_price}", "INFO")
-            self.logger.log(f"Boost Mode: {self.config.boost_mode}", "INFO")
-            self.logger.log(f"Auto Rebalance: {self.config.auto_rebalance}", "INFO")
-            self.logger.log("=============================", "INFO")
+            config_text = ("\n=== Trading Configuration ===\n")
+            config_text += (f"Ticker: {self.config.ticker}\n")
+            config_text += (f"Contract ID: {self.config.contract_id}\n")
+            config_text += (f"Quantity: {self.config.quantity}\n")
+            config_text += (f"Take Profit: {self.config.take_profit}%\n")
+            config_text += (f"Direction: {self.config.direction}\n")
+            config_text += (f"Max Orders: {self.config.max_orders}\n")
+            config_text += (f"Wait Time: {self.config.wait_time}s\n")
+            config_text += (f"Exchange: {self.config.exchange}\n")
+            config_text += (f"Grid Step: {self.config.grid_step}%\n")
+            config_text += (f"Stop Price: {self.config.stop_price}\n")
+            config_text += (f"Pause Price: {self.config.pause_price}\n")
+            config_text += (f"Boost Mode: {self.config.boost_mode}\n")
+            config_text += (f"Auto Rebalance: {self.config.auto_rebalance}\n")
+            config_text += ("=============================")
+            self.logger.log(config_text, "INFO")
+
+            self._tg_bot_notify(config_text)
 
             # Capture the running event loop for thread-safe callbacks
             self.loop = asyncio.get_running_loop()
@@ -613,7 +644,7 @@ class TradingBot:
                     error_message += "Position mismatch detected\n"  
                     error_message += f"Current Position: {self.position_amt} | Active closing orders/amount: {len(self.active_close_orders)}/{active_close_amount}\n"                    
                     self.logger.log(error_message, "ERROR")
-                    await self._lark_bot_notify(error_message.lstrip())
+                    await self._tg_bot_notify(error_message.lstrip())
                     if self.config.auto_rebalance:
                         self.logger.log("Auto rebalance position", "INFO")
                         await self._rebalance_position()
@@ -625,7 +656,7 @@ class TradingBot:
                     msg = f"\n\nWARNING: [{self.config.exchange.upper()}_{self.config.ticker.upper()}] \n"
                     msg += "Stopped trading due to stop price\n"
                     await self.graceful_shutdown(msg)
-                    await self._lark_bot_notify(msg.lstrip())
+                    await self._tg_bot_notify(msg.lstrip())
                     continue
 
                 if pause_trading:
