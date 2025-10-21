@@ -414,7 +414,7 @@ class TradingBot:
             try:   
                 msg = f"period notice: [open: {self.order_open_count}, close: {self.order_close_count}, rebalance: {self.order_rebalance_count}]"
                 self.logger.log(msg)
-                self._tg_bot_notify(msg)
+                await self._tg_bot_notify(msg)
 
                 self.last_notice_time = time.time()
 
@@ -542,12 +542,12 @@ class TradingBot:
             async with LarkBot(lark_token) as bot:
                 await bot.send_text(message)
 
-    def _tg_bot_notify(self, message: str):
+    async def _tg_bot_notify(self, message: str):
         token=os.getenv("TELEGRAM_BOT_TOKEN")
         chat_id=os.getenv("TELEGRAM_CHAT_ID")
         if token and chat_id:
-            with TelegramBot(token, chat_id) as bot:
-                bot.send_text(message)
+            async with TelegramBot(token, chat_id) as bot:
+                await bot.send_text(message)
     
     async def run(self):
         """Main trading loop."""
@@ -572,7 +572,7 @@ class TradingBot:
             config_text += ("=============================")
             self.logger.log(config_text, "INFO")
 
-            self._tg_bot_notify(config_text)
+            await self._tg_bot_notify(config_text)
 
             # Capture the running event loop for thread-safe callbacks
             self.loop = asyncio.get_running_loop()
